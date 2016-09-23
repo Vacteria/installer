@@ -1,0 +1,390 @@
+#!/bin/bash
+
+edit_loop()
+{
+	local DEVICE DEVTYPE
+	
+	DEVICE="${1}"
+	SET_THIS=$(part_edit_dg ${DEVICE})
+	if [ $? == "0" ]
+	then
+		case ${SET_THIS} in
+			1 ) 
+				DEVTYPE=$(print_type_select_menu)
+				case "${DEVTYPE}" in
+					1|2 ) 
+						sql "UPDATE MountPoints SET devtype='${DEVTYPE}'"
+						[ "${DEVTYPE}" == "2" ] && return 0
+					;;
+				esac
+			;;
+			2 )  
+				FMTSTATUS=$(sql "SELECT devfmt FROM MountPoints WHERE device='${DEVICE}'")
+				case "X${FMTSTATUS}" in
+					X|X0 ) SET_VALUE="1" ;;
+					X1   ) SET_VALUE="0" ;;
+				esac
+				sql "UPDATE MountPoints SET devfmt='${SET_VALUE}'"
+			;;
+			3 ) 
+				MYMNTPOINT=$(print_mnt_point_dg)
+				if [ "${MYMNTPOINT}" != "${NONE}" ]
+				then
+					for M in $(sql "SELECT id_mount FROM MountPoints WHERE mount='${MYMNTPOINT}'")
+					do
+						sql "UPDATE MountPoints SET mount='${NONE}'"
+					done
+					sql "UPDATE MountPoints SET mount='${MYMNTPOINT}'"
+				fi
+			;;
+		esac
+		[ "$?" == "0" ] && return 0
+		${FUNCNAME} ${DEVICE}
+	else
+		return 1
+	fi
+}
+
+part_edition()
+{
+	print_part_dg
+	PART_TO_EDIT=$(sh ${MYBLOCKDG})
+	if [ "$?" == "0" ]
+	then
+		edit_loop ${PART_TO_EDIT}
+		${FUNCNAME}
+	else
+		return 0
+	fi
+	
+	return 0
+}
+
+
+print_part_dg()
+{
+	local ID P ARRAY QRY DEV SIZE TYPE FSTYPE
+	
+	cat > ${MYBLOCKDG} << EOF
+#!/bin/bash
+
+dialog --colors --title "$(gettext "\Z0Partition edition")" --ok-label "$(gettext '%s' ${SELECT})" \
+--stdout --menu "$(gettext "Select one partition and press %s to edit them" ${EDIT})" 10 70 0 \\
+EOF
+
+	for ID in $(sql "SELECT id_disk FROM Disks")
+	do
+		for P in $(sql "SELECT id_part FROM Partitions WHERE id_disk='${ID}'")
+		do
+			unset ARRAY
+			QRY=$(sql "SELECT (device||','||size||','||type||','||fstype) FROM Partitions WHERE id_part='${P}'")
+			IFS=$','
+			for I in ${QRY}
+			do
+				ARRAY+=(${I})
+			done
+			unset IFS
+				
+			DEV="${ARRAY[0]}"
+			SIZE="${ARRAY[1]}"
+			TYPE="${ARRAY[2]}"
+			FSTYPE="${ARRAY[3]}"
+			unset ARRAY
+			
+			MYSIZE=$(use_size ${SIZE})
+			if [ $? != "0" ]
+			then
+				log "Unable to get ${DEV} disk size"
+				gui_die $(gettext 'Unable to get %s disk size' ${DEV})
+				rm ${MYBLOCKDG}
+				exit 1
+			fi
+		
+			MQRY="$(sql "SELECT (devfmt||','||mount) FROM MountPoints WHERE device='${DEV}'" )"
+			IFS=$','
+			for I in ${MQRY}
+			do
+				ARRAY+=(${I})
+			done
+			unset IFS
+			
+			DEVFMT="${ARRAY[0]}"
+			case ${DEVFMT} in
+				0 ) DEVFMTD="${NO}"  ;;
+				1 ) DEVFMTD="${YES}" ;;
+			esac
+			MNTPT="${ARRAY[1]:-${NONE}}"
+			
+			cat >> ${MYBLOCKDG} <<EOF
+${DEV} "${MYSIZE} ${TYPE} ${FSTYPE} -- ${DEVFMTD} ${MNTPT}" \\
+EOF
+		done
+	done
+
+	unset IFS
+}
+
+print_mnt_point_dg()
+{
+	dialog "$(gettext "\Z0Mount Points")" --cancel-label \
+	"${BACK}" --ok-label "${READY}" --stdout --radiolist \
+	"$(gettext "\nSelect a mount point for your device\n")" 18 60 6 \
+	"/"     "$(gettext "Root partition")"                   on \
+	"/boot" "$(gettext "Kernel and all boot elements")"     off \
+	"/usr"  "$(gettext "User binaries and common files")"   off \
+	"/var"  "$(gettext "Variable data and databases home")" off \
+	"/home" "$(gettext "User directories")"                 off
+}
+
+part_edit_dg()
+{
+	local DEVICE QRY DEVTYPE DEVFMT MOUNT I ARRAY
+
+	DEVICE="${1}"
+	sql "INSERT OR IGNORE INTO MountPoints (id_mount,device,mount) VALUES(null,'${DEVICE}','${NONE}')"
+	
+	QRY=$( sql "SELECT (devtype||','||devfmt||','||mount) FROM MountPoints WHERE device='${DEVICE}'" )
+	
+	IFS=$','
+	for I in ${QRY}
+	do
+		ARRAY+=(${I})
+	done
+	unset IFS
+
+	DEVTYPE="${ARRAY[0]}"
+	case "X${DEVTYPE}" in
+		X1   ) DEVTYPE="${NDEVPART}" ;;
+		X2   ) DEVTYPE="${NDEVSWAP}" ;;
+		X|X0 ) DEVTYPE="${NONE}"     ;;
+	esac
+
+	DEVFMT="${ARRAY[1]}"
+	case "X${DEVFMT}" in
+		X1   ) DEVFMT="${YES}" ;;
+		X|X0 ) DEVFMT="${NO}"  ;;  
+	esac
+	
+	MOUNT="${ARRAY[2]:-${NOSET}}"
+
+	dialog "$(gettext "\Z0Partition Settings")" \
+	--cancel-label "${BACK}" --ok-label "${READY}" --stdout --menu \
+	"$(gettext "Select settings for ${DEVICE} partition")" 12 60 6  \
+	"1" "$(gettext "Device Type     ${DEVTYPE}")" \
+	"2" "$(gettext "Format Device   ${DEVFMT}")" \
+	"3" "$(gettext "Mount Point     ${MOUNT}")" \
+	"4" "$(gettext "Extra options")"
+}
+
+
+		if ! check_if_is_install_media ${BLK}
+		then
+			INS="1"
+		fi
+
+		if ! check_if_is_repository ${BLK}
+		then
+			REPO="1"
+		fi
+
+
+check_if_is_repository()
+{
+	local INPUT MYDEV MYMNT
+
+	INPUT=${1##/dev/}
+	MYDEV="/dev/${INPUT}"
+	MYMNT="/run/mnt/${INPUT}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 0
+	fi
+	
+	if ! mountpoint -q ${MYMNT}
+	then
+		l_mount ${MYDEV} ${MYMNT} || return 0
+	fi
+
+	if [[ -d "${MYMNT}/packages" && -f "${MYMNT}/data/packages.db" ]]
+	then
+		log "$(gettext '%s looks like software repository, testing')" "${INPUT}"
+		if sqlite3 ${MYMNT}/data/packages.db "SELEC * FROM Packages"
+		then
+			log "$(gettext 'Yes !! %s is a software repository')" "${INPUT}"
+			l_umount "${MYMNT}"
+			return 1
+		else
+			log "$(gettext 'Sorry, %s does not software repository')" "${INPUT}"
+			l_umount "${MYMNT}"
+			return 0
+		fi
+	else
+		log "$(gettext '%s does not looks like software repository')" "${INPUT}"
+		l_umount "${MYMNT}"
+	fi
+
+	return 0
+}
+
+check_if_is_install_media()
+{
+	local INPUT MYDEV MYMNT
+
+	INPUT="${1##/dev/}"
+	MYDEV="/dev/${INPUT}"
+	MYMNT="/run/mnt/${INPUT}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 0
+	fi
+
+	if ! mountpoint -q ${MYMNT}
+	then
+		l_mount ${MYDEV} ${MYMNT} || return 0
+	fi
+
+	log "$(gettext 'Seraching install media on %s')" "${INPUT}"
+	if [ "$(cat ${MYMNT}/etc/vct-release 2>/dev/null)" == "Genesis installer" ]
+	then
+		if [ -x ${MYMNT}/sbin/vct-installer ]
+		then
+			log "$(gettext '%s looks like install media')" "${INPUT}"
+			l_umount ${MYMNT}
+			return 1
+		fi
+	else
+		log "$(gettext '%s does not looks like install media')" "${INPUT}"
+		l_umount ${MYMNT}
+	fi
+
+	return 0
+}
+
+print_type_select_menu()
+{
+	dialog "$(gettext "\Z0Type Selection")" --cancel-label "$(gettext "%s" ${BACK})" \
+	--ok-label "$(gettext "${READY}")" --stdout --radiolist \
+	"$(gettext "Select device type")" 10 60 4 \
+	1 "$(gettext "Normal partition")" on \
+	2 "$(gettext "Swap space")" off
+}
+
+
+#LASTEST CLEAN
+clock()
+{
+	local count="${1-:10}"
+
+	for ((i=0; i<=100; i=i+${count}))
+	do
+		echo $i
+		sleep 1
+	done
+}
+
+select_locales()
+{
+	local LIST LOCALES
+	
+	LIST="$(grep -E '^(#|[[:alpha:]])[[:alpha:]].*[[:space:]][[:alpha:]]' /etc/rc.conf.d/locales | tr -d '#' | cut -d ' ' -f 1)"
+	LOCALES=$(print_locales_dg ${LIST})	
+	printf '%s ' ${LOCALES}
+}
+
+set_default_lang()
+{
+	local MYLANG=$(print_def_lang_dg ${@})
+	while [ -z "${MYLANG}" ]
+	do
+		MYLANG=$(print_def_lang_dg ${@})
+		[ -n "${MYLANG}" ] && break
+	done
+	printf '%s ' ${MYLANG}
+}
+
+set_keyboard()
+{
+	local KBD MYKBD
+	
+	KBD=$(ls /lib/kbd/keymaps/i386/qwerty | sed 's/.map.*//g')
+	
+	MYKBD=$(print_kbd_dg ${KBD})
+	
+	printf '%s' ${MYKBD}
+}
+
+
+print_locales_dg()
+{
+	local INPUT LIST
+	
+	INPUT=(${@})
+	LIST=(${INPUT[@]/%/ "-" off })
+	
+
+	dialog "$(gettext "\Z0System locales")" --no-cancel \
+	--ok-label "${SELECT}" --stdout --checklist \
+	"$(gettext "\nSelect your system locales, more than one can be selected \n")" 25 60 15 \
+	"${LIST[@]}"
+}
+
+print_def_lang_dg()
+{
+	local INPUT LIST
+	
+	INPUT=(${@})
+	LIST=(${INPUT[@]/%/ "-" off })
+	
+	dialog "$(gettext "\Z0System language")" --cancel-label \
+	"${BACK}" --ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext "\nSelect your default system locales\n")" 15 60 15 \
+	"${LIST[@]}"
+}
+
+print_kbd_dg()
+{
+	local INPUT LIST
+	
+	INPUT=(${@})
+	LIST=(${INPUT[@]/%/ "-" off })
+	
+	dialog "$(gettext "\Z0System Keyboard")" --cancel-label \
+	"${SKIP}" --ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext "\nSelect your console keyboard. If select \"skip\", default US keyboard will be use\n")" 25 60 15 \
+	"${LIST[@]}"
+}
+
+
+
+
+					SYS_LOCALES=$(select_locales)
+					if [ "$?" == "0" ]
+					then
+						sql "UPDATE Settings SET locales='${SYS_LOCALES}' WHERE id_config='1'"
+						set -- ${SYS_LOCALES}
+						if [ "${#@}" -gt "1" ]
+						then
+							DEF_LANG=$(set_default_lang ${SYS_LOCALES})
+						else
+							DEF_LANG="${SYS_LOCALES}"
+						fi
+						sql "UPDATE Settings SET language='${DEF_LANG}' WHERE id_config='1'"
+					fi
+					
+					CONSOLE_KBD="$(set_keyboard)"
+					CONSOLE_KBD="${CONSOLE_KBD:-default}"
+					sql "UPDATE Settings SET keyboard='${CONSOLE_KBD}' WHERE id_config='1'"
+					
+					HWCLOCK=$(print_hwclock_dg)
+					HWCLOCK="${HWCLOCK:-utc}"
+					sql "UPDATE Settings SET hwclock='${HWCLOCK}' WHERE id_config='1'"
+					
+					ZONEINFO=$(set_zoneinfo)
+					if [ "$?" == "0" ]
+					then
+						sql "UPDATE Settings SET zoneinfo='${ZONEINFO}' WHERE id_config='1'"
+					fi

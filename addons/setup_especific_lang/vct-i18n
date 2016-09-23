@@ -1,0 +1,94 @@
+#!/bin/sh
+
+set +o posix
+shopt -s expand_aliases
+
+if builtin command -v gettext >/dev/null
+then
+	alias gettext='gettext -e'
+else
+	alias gettext='printf %s'
+fi
+alias dialog='dialog --colors --title'
+
+SELECT=$(gettext 'Select')
+
+print_lang_dg()
+{
+	LANGS=(
+		en "English" on
+		es "Español" off
+	)
+
+	dialog "$(gettext "\Z0Select language")" --no-cancel \
+	--ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext "\nSelect main language for the installer and system\n")" 15 60 15 \
+	${LANGS[@]}
+}
+
+print_es_locales()
+{
+	ESLOCALES=(
+		es_ES "España"               on
+		es_AR "Argentina"            off
+		es_BO "Bolivia"              off
+		es_CL "Chile"                off
+		es_CO "Colombia"             off
+		es_CR "Costa Rica"           off
+		es_DO "Republica Dominicana" off
+		es_EC "Ecuador"              off
+		es_GT "Guatemala"            off
+		es_HN "Honduras"             off
+		es_MX "Mexico"               off
+		es_NI "Nicaragua"            off
+		es_PA "Panama"               off
+		es_PE "Peru"                 off
+		es_PR "Puerto Rico"          off
+		es_PY "Paraguay"             off
+		es_SV "El Salvador"          off
+		es_US "Estados Unidos"       off
+		es_UY "Uruguay"              off
+		es_VE "Venezuela"            off
+	)
+
+	dialog "\Z0Pais" --no-cancel --ok-label "Seleccionar" --stdout --radiolist \
+	"Seleccione su pais\n" 15 60 15 "${ESLOCALES[@]}"
+}
+
+print_en_locales()
+{
+	ENLOCALES=(
+		en_US "United States" on
+		en_AU "Australia" off
+		en_BW "Botswana" off
+		en_CA "Canada" off
+		en_DK "Denmark" off
+		en_GB "United Kingdom" off
+		en_HK "Hong Kong" off
+		en_IE "Ireland" off
+		en_NZ "New Zealand" off
+		en_PH "Philippines" off
+		en_SG "Singapore" off
+		en_ZA "South Africa" off
+		en_ZW "Zimbabwe" off
+	)
+
+	dialog "\Z0Country" --no-cancel --ok-label "Select" --stdout --radiolist \
+	"Select your country\n" 15 60 15 "${ENLOCALES[@]}"
+}
+
+ESKBD=(
+	es        "España"                      off
+	la-latin1 "Latinoamerica"               off
+	none      "$(gettext 'System default')" On
+)
+ENKBD=(
+	none "System default" On
+	uk   "United Kingdom" Off
+)
+
+
+MYLANG=$(print_lang_dg)
+
+echo ${MYLANG}
+exit

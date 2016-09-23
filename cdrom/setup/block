@@ -1,0 +1,380 @@
+#!/bin/bash
+
+get_raid_arrays()
+{
+	local I A
+
+	log "$(gettext 'Scanning raid arrays')"
+	for I in $(ls -1 /sys/block/ | grep -E "md[0-9]$")
+	do
+		if [ -d /sys/block/${I}/md ]
+		then
+			log "$(gettext '%s looks like raid array')"
+			A+=" ${I}"
+		fi
+	done
+
+	if [ -n "${A}" ]
+	then
+		log "$(gettext 'Found arrays :\n%s')" ${A}
+		printf "${A}"
+	else
+		log "$(gettext 'No raid arrays found')"
+	fi
+
+	return 0
+}
+
+get_slaves_from_array()
+{
+	local O INPUT
+	
+	INPUT="${1##/dev/}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 1
+	fi
+
+	log "$(gettext 'Searching %s array slaves')" "${INPUT}"
+
+	O="$(ls -1 /sys/block/${INPUT}/slaves)"
+
+	if [ ! -z ${O} ]
+	then
+		log "$(gettext 'No slaves found for %s array')" "${INPUT}"
+	else
+		log "$(gettext 'Found slaves :\n%s')" ${O}
+		printf "${O}"
+	fi
+
+	return 0
+}
+
+get_partitions_of_disk()
+{
+	local INPUT="${1##/dev/}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 1
+	fi
+	
+	ls /sys/block/${INPUT}/ | grep -E "${INPUT}[0-9]?"
+
+	return 0
+}
+
+insert_partitions()
+{
+	local INPUT LANG_HOLD ID NUM START END SIZE TYPE FSTYPE FLAGS BLK DEV
+	
+	INPUT="${1}"
+	LANG_HOLD="${LANG}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 1
+	fi
+
+	if [ ! -d /sys/block/${INPUT##/dev/} ]
+	then
+		log_not_disk "${INPUT}"
+		return 1
+	fi
+	
+	ID="$(sql "SELECT id_disk FROM Disks WHERE device='${INPUT}'")"
+	log "$(gettext 'The disk id is %s')" "${ID}"
+
+	LANG=C parted -s ${INPUT} unit b print free | \
+	sed -e '/Number/,/^$/!d' | grep -Ev "^(Number|$)" | \
+	grep -Eiv "extended" | \
+	while read NUM START END SIZE TYPE FSTYPE FLAGS
+	do
+		case "X${NUM}" in
+			X*B )
+				log "Skipping freespace partitions addition"
+				continue
+			;;
+			X[0-9]* )
+				case "${FSTYPE}" in
+					linux-swap*) FSTYPE="swap"      ;;
+					*          ) FSTYPE="${FSTYPE}" ;;
+				esac
+			;;
+		esac
+
+		BLK="${INPUT##/dev/}${NUM}"
+		DEV="/dev/${BLK}"
+		
+		if ! check_if_is_lvm ${BLK} || ! check_if_is_raid_slave ${BLK}
+		then
+			continue
+		fi
+
+		log_inserting "${BLK}" "Partition"
+		
+		sql "INSERT INTO Partitions \
+		VALUES(null,'${ID}','${DEV}','${SIZE%%B}','${TYPE}','${FSTYPE}')"
+	done
+
+	export LANG="${LANG_HOLD}"
+	unset LANG_HOLD
+	
+	return 0
+}
+
+get_device_size()
+{
+	local UNIT DEVICE SECTORS BYTES KBYTES MBYTES GBYTES
+
+	case ${1} in
+		-s|-b|-k|-m|-g )
+			case ${1} in
+				-s ) UNIT="sectors"   ;;
+				-b ) UNIT="bytes"     ;;
+				-k ) UNIT="kbytes"    ;;
+				-m ) UNIT="megabytes" ;;
+				-g ) UNIT="gigabytes" ;;
+			esac
+			shift 1
+		;;
+	esac
+	UNIT="${UNIT:-bytes}"
+	DEVICE="${1##/dev/}"
+
+	if [[ -z "${DEVICE}" || -z "${UNIT}" ]]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 1
+	fi
+
+	SECTORS="$(cat /sys/block/${DEVICE}/size)"
+	BYTES="$((${SECTORS} * 512))"
+	KBYTES="$((${SECTORS} / 1000))"
+	MBYTES="$((${SECTORS} / 10000))"
+	GBYTES="$((${SECTORS} / 100000))"
+
+	case ${UNIT} in
+		sectors ) printf '%d' "${SECTORS}"  ;;
+		bytes   ) printf '%d' "${BYTES}"    ;;
+		kbytes  ) printf '%.0f' "${KBYTES}" ;;
+		mbytes  ) printf '%.0f' "${MBYTES}" ;;
+		gbytes  ) printf '%.0f' "${GBYTES}" ;;
+	esac
+
+	return 0
+}
+
+check_if_is_cdrom()
+{
+	local INPUT="${1##/dev/}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 0
+	else
+		if [ "X$(sql "SELECT id_cdrom FROM CdRooms WHERE device='/dev/${INPUT}'" )" != "X" ]
+		then
+			log "$(gettext '%s looks like cdrom device')" "${INPUT}"
+			return 1
+		else
+			log "$(gettext '%s is not cdrom device')" "${INPUT}"
+		fi
+	fi
+
+	return 0
+}
+
+check_if_is_lvm()
+{
+	local INPUT="${1##/dev/}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 0
+	else
+		if [ "X$(sql "SELECT id_lvm FROM LvmMembers WHERE device='/dev/${INPUT}'")" != "X" ]
+		then
+			log "$(gettext '%s looks like lvm phisical volume')" "${INPUT}"
+			return 1
+		else
+			log "$(gettext '%s is not lvm phisical volume')" "${INPUT}"
+		fi
+	fi
+
+	return 0
+}
+
+check_if_is_raid_slave()
+{
+	local INPUT="${1##/dev/}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 0
+	else
+		if [ "X$(sql "SELECT id_raid FROM RaidSlaves WHERE device='/dev/${INPUT}'")" != "X" ]
+		then
+			log "$(gettext '%s looks like raid array slave')" "${INPUT}"
+			return 1
+		else
+			log "$(gettext '%s is not raid array slave')" "${INPUT}"
+		fi
+	fi
+
+	return 0	
+}
+
+search_block_devices()
+{
+	local MYCDS C MYPVS P R MYMODEL MYSIZE MYINDEX MYBLOCK B S
+	
+	#
+	# First search cdroms and populate CdRooms table
+	#
+	if [ -d /proc/sys/dev/cdrom ]
+	then
+		MYCDS="$(cat /proc/sys/dev/cdrom/info | grep -E "^drive name:.*" | cut -d ":" -f 2 | tr -d '\t')"
+		log "$(gettext 'Found cdroms :\n%s')" ${MYCDS}
+		for C in ${MYCDS}
+		do
+			log_inserting "${C}" "Disks"
+			sql "INSERT OR IGNORE INTO CdRooms VALUES(null,'/dev/${C}')"
+		done
+	else
+		log "$(gettext 'No cdroms found on this systems')"
+	fi
+
+	#
+	# Search lvm phisical volumes and populate table LvmMembers
+	#
+	log "$(gettext 'Searching lvm phisical volumes')"
+	MYPVS="$(lvm pvs --noheading -o pv_name)"
+	for P in ${MYPVS}
+	do
+		log_inserting "${P}" "LvmMembers"
+		sql "INSERT OR IGNORE INTO LvmMembers VALUES(null,'${P}')"
+	done
+
+
+	#
+	# Now search RAID array's to make possible hold partitions
+	# and phisical disks
+	#
+	for R in $(get_raid_arrays)
+	do
+		MYMODEL="RAID Array"
+		MYSIZE="$(get_device_size -b ${R})"
+		if check_if_is_lvm ${R}
+		then
+			log_inserting "${R}" "Disks"
+			sql "INSERT OR IGNORE INTO Disks VALUES(null,'/dev/${R}','${MYSIZE}','${MYMODEL}')"
+
+			MYINDEX="$(sql "SELECT id_disk FROM Disk WHERE device='/dev/${R}'")"
+			for S in $(get_slaves_from_array ${R})
+			do
+				log_inserting "${S}" "RaidSalaves"
+				sql "INSERT OR IGNORE INTO RaidSalves VALUES('${MYINDEX}','/dev/${S}')"
+			done
+		fi
+	done
+
+	#
+	# Finally search and add usable disks and partitions
+	#
+	log "$(gettext 'Searching generic SCSI/IDE/USB Block devices')"
+	MYBLOCK="$(ls -1 /sys/block | grep -E "^sd[a-z]|hd[a-z]")"
+	if [ -z "${MYBLOCK}" ]
+	then
+		log "$(gettext 'No SCSI/IDE/USB Block devices found')"
+	else
+		log "$(gettext 'Block devices found :\n%s')" "${MYBLOCK}"
+		for B in ${MYBLOCK}
+		do
+			MYMODEL="$(cat /sys/block/${B}/device/model)"
+			MYSIZE="$(get_device_size -b ${B})"
+
+			if ! check_if_is_cdrom ${B} || ! check_if_is_lvm ${B} || ! check_if_is_raid_slave ${B}
+			then
+				continue
+			fi
+
+			log_inserting "${B}" "Disks"
+			sql "INSERT OR IGNORE INTO Disks VALUES(null,'/dev/${B}','${MYSIZE}','${MYMODEL}')"
+			if [ "X$(get_partitions_of_disk ${B})" == "X" ]
+			then
+				log "$(gettext 'No partitons found in %s disk')" "${B}"
+				continue
+			fi
+			
+			insert_partitions "/dev/${B}"
+		done
+	fi
+}
+
+check_hard_disk()
+{
+	local USABLE
+
+	log "$(gettext 'Searching usable hard disks')"
+
+	USABLE="$(sql "SELECT device FROM Disks")"
+	if [ -z "${USABLE}" ]
+	then
+		log "$(gettext 'Unable to find any usable hard disk on system')"
+		return 1
+	else
+		log "$(gettext 'Usable hard disks found :\n%s')" "${USABLE}"
+	fi
+
+	return 0
+}
+
+open_parter()
+{
+	local INPUT="${1}"
+
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 0
+	fi
+
+	log "$(gettext 'Openning parter program')"
+	if cfdisk ${INPUT}
+	then
+		clear
+		{
+			echo 30
+			log "$(gettext 'Partition finish, update nodes')"
+			if partprobe ${INPUT}
+			then
+				wait
+			else
+				log "$(gettext 'Failed to update nodes')"
+				return 1
+			fi
+			
+			echo 60
+			log_flushing_table "Partitions"
+			sql "DELETE FROM Partitions"
+		
+			echo 90
+			insert_partitions ${INPUT}
+			
+			echo 100
+		} | dialog "$(gettext "Progress")" --gauge "$(msg "$(gettext '\nRebuilding partition table for %s device')" ${INPUT})" 10 70 0 || return 1
+	else
+		log "$(gettext 'Failed to part %s device')" "${INPUT}"
+		return 1
+	fi
+
+	return 0
+}

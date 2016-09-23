@@ -1,0 +1,6 @@
+1 .- Crete /etc/hosts file
+2 .- Create /etc/resolv.conf file
+3 .- Setup /etc/rc.conf.d/hostname file
+4 .- Setup /etc/rc.conf.d/locales file
+5 .- Setup /etc/rc.conf.d/i18n file
+6 .- Setup /etc/rc.conf.d/tzdata file

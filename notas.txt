@@ -1,0 +1,13 @@
+* Despues de varias implementaciones y observaciones realizadas. Se puede concluir, que un sistema
+  ramfs que necesite usar switch_root o pivot_root para arrancar un sistema real, necesita hacer
+  uso del mismo sistema de creacion de nodos y dispositivos (hotplug) del sistema que se va a 
+  arancar. Por lo tanto, es imposible usar mdev en el ramfs y udev en el sistema real, esto dara un 
+  error de forma invariable.
+
+* Justo antes de hacer el cambio de ambiente del ramfs a el real, este ultimo debe montarse en modo
+  ro (read-only) ya que de lo contrario el guin chckfs retornara un error al no poder hacer una 
+  revision de la particion / montada en modo rw (write-mode). Sin embargo, cuando el sistema se 
+  monta en ro y se hace el cambio al sistema real, init llama al script /lib/init/rc el cual 
+  necesita hacer uso de un sistema de archivos para escribir hacia stderr y el socket "null"
+  pero al estar este monatdo en ro provoca que el script "rc" falle una y otra vez entrando
+  en un blucle infinito.

@@ -1,0 +1,185 @@
+#!/bin/bash
+
+MYHOME="${0%/*}"
+MYSELF="vct-installer"
+MYROOT="/mnt/rootfs"
+MYDB="/tmp/install.db"
+MYLOG="/tmp/install.log"
+MYERR="/tmp/install.err"
+MYBITE="1000"
+MYLANG="en"
+MYKEY="none"
+
+#
+# Export i18n envirnoment vairables
+#
+export TEXTDOMAINDIR="${MYHOME}"
+export TEXTDOMAIN="${MYNAME}"
+
+. ${MYHOME}/messages
+. ${MYHOME}/common
+
+include "dialogs"
+include "database"
+include "block"
+
+set_language
+
+{
+	[ -f "${MYLOG}" ] && rm -f ${MYLOG}
+
+	cat <<EOF
+XXX
+20
+$(gettext 'Flush install database')
+XXX
+EOF
+	flush_database || exit 1
+
+
+	cat <<EOF
+XXX
+40
+$(gettext 'Cleanning rootfs mountages')
+XXX
+EOF
+	umount_all || exit 1
+
+	cat <<EOF
+XXX
+60
+$(gettext 'Recreate database if does not exist')
+XXX
+EOF
+	create_database || gui_die "$(gettext 'Failed to database creation')"
+	sql "INSERT OR IGNORE INTO Settings VALUES(null,'${MYLANG}','${MYKEY}','${NONE}','${NONE}','${NONE}','${NONE}','${NONE}','${NONE}')"
+	sql "INSERT OR IGNORE INTO Users (id_user,name) VALUES(0,'root')"
+
+	cat <<EOF
+XXX
+90
+$(gettext 'Processing block devices on system')
+XXX
+EOF
+	search_block_devices
+
+
+	cat <<EOF
+XXX
+100
+$(gettext 'Rendering...')
+XXX
+EOF
+
+	sleep 1
+
+} | dialog "$(gettext "Loading")" --gauge "$(gettext 'loading installer. Please wait')" 10 70 0 || exit 1
+
+
+if ! check_hard_disk
+then
+	gui_die "$(gettext 'This system have not any usable hard disk')"
+fi
+
+main()
+{
+	log "$(gettext 'Calling main()')"
+
+	ACTION="$(print_main_menu)"
+
+	case $? in 
+		3 )
+			log_action_selected "INSTALL"
+			include "install"
+			
+			if install_check_settings
+			then
+				# First check images for profile
+				check_images
+				
+				# Format and mount all tagged partitions
+				format_and_mount
+				
+				# Install all profiles one by one
+				install_profiles
+								
+				# Config new system
+				
+				# Install Grub
+			fi
+		;;
+		1 ) 
+			#gui_yesno "$(gettext 'You relly want exif of installer ?')"
+			#if [ $? == "0" ]
+			#then
+			#	flush_database
+			#	umount_all
+				return 0
+			#fi
+		;;
+		0 )
+			case ${ACTION} in
+				1 )
+					log_action_selected "1(partitioning)"
+					DISK_TO_PART=$(print_dsk_dg)
+					if [ "${?}" == "0" ]
+					then
+						if [ -n "${DISK_TO_PART}" ]
+						then
+							log_block_selected "${DISK_TO_PART}"
+							open_parter ${DISK_TO_PART}
+						fi
+					fi
+				;;
+				2 )
+					log_action_selected "2(Partitions definition)"
+					assign_partitions
+				;;
+				3 )
+					log_action_selected "3(Installation type)"
+					INS_TYPE=$(print_ins_dg)
+					if [ "$?" == "0" ]
+					then
+						sql "UPDATE Settings SET profile='${INS_TYPE}'"
+						case "${INS_TYPE}" in
+							core    ) IMG="core" ;;
+							server  ) IMG="core server" ;;
+							desktop ) IMG="core xorg media desk xfce" ;;
+						esac
+						sql "UPDATE Settings SET images='${IMG}'"
+					fi
+				;;
+				4 )
+					log_action_selected "4(User setup)"
+					#set_passwd 'root'
+					user_setup
+				;;
+				5 )
+					log_action_selected "5(Time zone and clock)"
+					
+					ZONEINFO=$(set_zoneinfo)
+					if [ "$?" == "0" ]
+					then
+						sql "UPDATE Settings SET zoneinfo='${ZONEINFO}' WHERE id_config='1'"
+					fi
+
+					HWCLOCK=$(print_hwclock_dg)
+					if [ "$?" == "0" ]
+					then
+						sql "UPDATE Settings SET hwclock='${HWCLOCK}' WHERE id_config='1'"
+					fi
+				;;
+				6 )
+					BOOTLOADER="$(print_loader_dg)"
+					BOOTLOADER="${BOOTLOADER:-mbr}"
+					sql "UPDATE Settings SET bootloader='${BOOTLOADER}' WHERE id_config='1'"
+				;;
+			esac
+		;;
+	esac
+	
+	main
+	return 0
+}
+main
+exit $?

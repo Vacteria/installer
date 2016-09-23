@@ -1,0 +1,466 @@
+#!/bin/bash
+
+alias sql='sqlite3 ${MYDB}'
+alias dialog='dialog --colors --backtitle "$(gettext "Vacteria GNU/Linux installer")" --title'
+
+include()
+{
+	[ -z "${MYHOME}/${1}" ] && gui_die "$(gettext 'Must be provide some file')"
+	[ ! -f "${MYHOME}/${1}" ] && gui_die "$(gettext '%s file not found')" "${1}"
+
+	. ${MYHOME}/${1} || gui_die "$(gettext 'Failed to load %s file')" "${1}"
+
+	return 0
+}
+
+set_language()
+{
+	local CMD
+	while read CMD
+	do
+		case "${CMD}" in
+			language=.* )
+				MYLANG="${CMD#*=}"
+				case "${MYLANG}" in
+					en|en_* ) MYLANG="en" ;;
+					es|es_* ) MYLANG="es" ;;
+					*       ) MYLANG="en" ;;
+				esac
+			;;
+			keyboard=.* )
+				MYKEY="${CMD#*=}"
+				case "${{MYKEY}" in
+					es|la-latin1|en ) MYKEY="${MYKEY}" ;;
+					*               ) MYKEY="none"     ;;
+				esac
+			;;
+		esac
+	done < /proc/cmdline
+}
+
+guess_fstype()
+{
+	local DEV="${1}"
+	
+	[ -z "${DEV}" ] && return 0
+	
+	blkid ${DEV} -o value -s TYPE
+	
+	return $?
+}
+
+umount_killing()
+{
+	local DIR FAIL K
+
+	DIR="${1}"
+	if [ -z "${DIR}" ]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 1
+	fi
+
+	log "$(gettext 'Killing and umount %s directory')" "${DIR}"
+	for K in $(fuser -m ${DIR})
+	do
+		log_killing_hold "${K}"
+		log "$(gettext 'Killing %s process')" "${K}"
+		if ! kill -KILL ${K}
+		then
+			log "$(gettext 'Failed to kill %s process')" "${K}"
+		fi
+	done
+
+	if ! umount ${DIR}
+	then
+		log "$(gettext 'Unable to kill and umount %s directory')" "${DIR}"
+		return 1
+	else
+		log "$(gettext 'Umount %s directory sucefull')" "${DIR}"
+	fi
+
+	return 0
+}
+
+dev_from_dir()
+{
+	local INPUT DEV MNT
+
+	INPUT="${1}"
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args ${FUNCNAME}
+		return 1
+	fi
+
+	if [ ! -d "${INPUT}" ]
+	then
+		log "$(gettext '%s is not directory')"
+		return 1
+	fi
+
+	while read DEV MNT FS REST
+	do
+		if [[ "${MNT}" == "${INPUT}" && -n "${DEV}" ]]
+		then
+			printf "${DEV}"
+			break
+		fi
+	done < /proc/mounts
+
+	return 0
+}
+
+dir_from_dev()
+{
+	local INPUT DEV MNT
+
+	INPUT="${1}"
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args ${FUNCNAME}
+		return 1
+	fi
+
+	if [ ! -c "${INPUT}" ]
+	then
+		log "$(gettext '%s is not charset device')"
+		return 1
+	fi
+
+	while read DEV MNT FS OPTIONS REST
+	do
+		if [[ "${DEV}" == "${INPUT}" && -n "${MNT}" ]]
+		then
+			printf "${MNT}"
+			break
+		fi
+	done < /proc/mounts
+
+	return 0
+}
+
+l_umount()
+{
+	local INPUT IS DEV DIR 
+
+	INPUT="${1}"
+	if [ -z "${INPUT}" ]
+	then
+		log_mis_args ${FUNCNAME}
+		return 1
+	fi
+
+	if [ -b "${INPUT}" ]
+	then
+		IS="node"
+		DEV="${INPUT}"
+		DIR="$(dir_from_dev ${DEV})"
+	elif [ -d "${INPUT}" ]
+	then
+		IS="dir"
+		DIR="${INPUT}"
+		DEV="$(dev_from_dir ${DIR})"
+	else
+		log "$(gettext '%s is not node or directory')"
+		return 1
+	fi
+
+	if [ "${IS}" == "dir" ]
+	then
+		if [ -z "${DEV}" ]
+		then
+			log_no_mount "${DIR}"
+			return 0
+		fi
+
+		if mountpoint -q ${DIR}
+		then
+			case "${DIR}" in
+				/proc|/sys|/dev|/dev/pts|/run )
+					log_forb_umount "${DIR}"
+					return 1
+				;;
+			esac
+
+			log_umounting "${DIR}"
+			if ! umount ${DIR}
+			then
+				umount_killing "${DIR}" || return 1	
+			fi
+		else
+			log_no_mount "${DIR}"
+		fi
+	elif [ "${IS}" == "node" ]
+	then
+		if [ -z "${DIR}" ]
+		then
+			log_no_mount "${DEV}"
+			return 0
+		fi
+
+		case "${DIR}" in
+			/proc|/sys|/dev|/dev/pts|/run )
+				log_forb_umount "${DIR}"
+				return 1
+			;;
+		esac
+
+		[ "$(guess_fstype ${DEV})" == "swap" ] && return 0
+
+		log_umounting "${DEV}"
+		if ! umount ${DEV}
+		then
+			umount_killing "${DEV}" || return 1	
+		fi
+	fi
+
+	return 0
+}
+
+l_mount()
+{
+	local DEV DIR
+
+	DEV="/dev/${1##/dev/}"
+	DIR="${2}"
+
+	if [[ -z "${DEV}" || -z "${DIR}" ]]
+	then
+		log_mis_args "${FUNCNAME}"
+		return 1
+	fi
+
+	if [ -d "${DIR}" ]
+	then
+		log "$(gettext 'Mount directory found')"
+		l_umount ${DIR} || return 1
+	fi
+
+	log_mounting "${DEV}" "${DIR}"
+	[ ! -d "${DIR}" ] && mkdir -p ${DIR}
+
+	[ "$(guess_fstype ${DEV})" == "swap" ] && return 0
+
+	if ! mount ${DEV} ${DIR}
+	then
+		log "$(gettext 'Failed to mount %s device')" "${DEV}"
+		return 1
+	fi
+
+	return 0
+}
+
+umount_all()
+{
+	if mountpoint -q ${MYROOT} &>/dev/null
+	then
+		log "$(gettext 'Cleanning %s mountages')" "${MYROOT}"
+		for P in run proc sys dev usr home var var/tmp tmp
+		do
+			if mountpoint -q ${MYROOT}/${P}
+			then
+				log_umounting "${MYROOT}/${P}"
+				if ! umount ${MYROOT}/${P}
+				then
+					umount_killing "${MYROOT}/${P}" || return 1
+				fi
+			else
+				log_no_mount "${MYROOT}/${P}"
+			fi
+		done
+
+		log_umounting "${MYROOT}"
+		if ! umount ${MYROOT}
+		then
+			umount_killing "${MYROOT}" || return 1
+		fi
+	else
+		log_no_mount "${MYROOT}"
+	fi
+
+	return 0
+}
+
+use_size()
+{
+	
+	local SIZE KSIZE MSIZE GSIZE TSIZE USE_SIZE
+	
+	SIZE="${1}"
+	KSIZE="$((${SIZE} / ${MYBITE}))"
+	MSIZE="$((${SIZE} / ${MYBITE} / ${MYBITE}))"
+	GSIZE="$((${SIZE} / ${MYBITE} / ${MYBITE} / ${MYBITE}))"
+	TSIZE="$((${SIZE} / ${MYBITE} / ${MYBITE} / ${MYBITE} / ${MYBITE}))"
+	
+	if (( ${KSIZE} >= ${MYBITE} ))
+	then
+		if (( ${MSIZE} >= ${MYBITE} ))
+		then
+			if (( ${GSIZE} >= ${MYBITE} ))
+			then
+				if (( ${TSIZE} > 1 ))
+				then
+					USE_SIZE="${TSIZE}TB"
+				fi
+			else
+				USE_SIZE="${GSIZE}GB"
+			fi
+		else
+			USE_SIZE="${MSIZE}MB"
+		fi		
+	else
+		USE_SIZE="${KSIZE}KB"
+	fi
+
+	[ -z "${USE_SIZE}" ] && return 1
+	printf '%s' "${USE_SIZE}"
+	return 0
+}
+
+assign_partitions()
+{
+	PART_TO_EDIT=$(print_blk_dg)
+	while [ "$?" == "0" ]
+	do
+		log "%s partition was selected inserting on database" "${PART_TO_EDIT}"
+		sql "INSERT OR IGNORE INTO MountPoints (id_mount,device,devfmt) VALUES(null,'${PART_TO_EDIT}','0')"
+		PART_MNT=$(print_mnt_dg)
+		if [ "$?" == "0" ]
+		then
+			log "%s mountpoint selected for %s device" "${PART_MNT}" "${PART_TO_EDIT}"
+			log "Flushing previus partitions using %s mountpoint" "${PART_MNT}" 
+			for P in $(sql "SELECT device FROM MountPoints WHERE mount='${PART_MNT}'")
+			do
+				log "Flushign %s device with %s mountpoint" "${P}" "${PART_MNT}"
+				sql "UPDATE MountPoints SET mount='', devfmt='0' WHERE device='${P}'"
+			done
+			log "Setting %s mountpoint to %s device" "${PART_MNT}" "${PART_TO_EDIT}"
+			sql "UPDATE MountPoints SET mount='${PART_MNT}' WHERE device='${PART_TO_EDIT}'"
+			
+			case ${PART_MNT} in
+				/|swap )
+					log "Forcing format to %s device with %s mountpoint" "${PART_TO_EDIT}" "${PART_MNT}"
+					sql "UPDATE MountPoints SET devfmt='1' WHERE device='${PART_TO_EDIT}'"
+				;;
+				* )
+					gui_yesno "$(gettext 'Do yo want format %s partition')" ${PART_TO_EDIT}
+					case $? in
+						0 ) VAL="1" ;;
+						1 ) VAL="0" ;;
+					esac
+					sql "UPDATE MountPoints SET devfmt='${VAL}' WHERE device='${PART_TO_EDIT}'"
+				;;
+			esac
+		fi
+		
+		${FUNCNAME}
+		[ "$?" != "0" ] && break
+	done
+}
+
+set_passwd()
+{
+	local USER PASSWD_1 PASSWD_2 
+	USER="${@}"
+
+	if [ -z "$(sql "SELECT id_user FROM Users WHERE name='${USER}'")" ]
+	then
+		gui_err "$(gettext 'The user name %s does not exist' ${USER})"
+		return 1
+	fi
+	
+	MSG_1="$(gettext '%s' "Enter ${USER} password")"
+	MSG_2="$(gettext '%s' "Enter again ${USER} password to verify")"
+	
+	PASSWD_1=$(print_passwd_dg "${MSG_1}")	
+	[ $? != "0" ] && return 1
+	while [ "x${PASSWD_1}" == "x" ];
+	do
+		gui_err "$(gettext 'Password field can not be empty. Enter valid password please')"
+		PASSWD_1=$(print_passwd_dg "${MSG_1}")
+		[ "x${PASSWD_1}" != "x" ] && break
+	done
+
+	PASSWD_2=$(print_passwd_dg "${MSG_2}" )
+	[ $? != "0" ] && return 1
+	while [ "x${PASSWD_2}" == "x" ]
+	do
+		gui_err "$(gettext 'Password field can not be empty. Enter valid password please')"
+		PASSWD_2=$(print_passwd_dg "${MSG_2}")
+		[ "x${PASSWD_2}" != "x" ] && break
+	done
+	
+	if [ "${PASSWD_1}" != "${PASSWD_2}" ]
+	then
+		gui_err "$(gettext 'The passwords does not match. Please, Try again')"
+		${FUNCNAME} "${USER}"
+		[ $? != "0" ] && return 1
+	fi
+
+	case ${USER} in
+		administrative ) USER="root" ;;
+	esac
+	
+	sql "UPDATE Users SET passwd='$(mkpasswd -m -p "${PASSWD_1}")' WHERE name='${USER}'"
+	
+	return 0
+}
+
+user_setup()
+{
+	local USER_NAME
+		
+	USER_NAME=$(print_user_dg "$(gettext 'Enter a user name without spaces or exotic characters')")
+	[ $? != "0" ] && return 1
+	
+	while [ "x${USER_NAME}" == "x" ]
+	do
+		gui_err "$(gettext 'This field cannot be empty')"
+		USER_NAME=$(print_user_dg "$(gettext 'Enter a user name without spaces or exotic characters')")
+		[ $? != "0" ] && return 1
+		[ "x${USER_NAME}" != "x" ] && break
+	done
+	
+	while [ "x$(echo ${USER_NAME} | grep -E "[[:space:]]")" != "x" ]
+	do
+		gui_err "$(gettext 'The user name field cannot contain spaces')"
+		USER_NAME=$(print_user_dg "$(gettext 'Enter a user name without spaces or exotic characters')")
+		[ $? != "0" ] && return 1
+		[ "x$(echo ${USER_NAME} | grep -E "[[:space:]]")" != "x" ] && break
+	done
+
+	if [ -n "$(sql "SELECT id_user FROM Users WHERE name='${USER_NAME}'")" ]
+	then
+		gui_err "$(gettext 'An user with %s name allready exist' ${USER_NAME})"
+		${FUNCNAME}
+		[ $? != "0" ] && return 1
+	fi
+		
+	sql "DELETE FROM Users WHERE name='${USER_NAME}'"
+	sql "INSERT OR IGNORE INTO Users (id_user,name) VALUES(null,'${USER_NAME}')"
+	
+	set_passwd "${USER_NAME}"
+	
+	HOST_NAME="$(print_hostname_dg)"
+	HOST_NAME="${HOST_NAME:-${USER_NAME}-PC}"
+	sql "UPDATE Settings SET hostname='${HOST_NAME}' WHERE id_config='1'"
+	
+	return $?
+}
+
+set_zoneinfo()
+{
+	local DIRS FULL LIST ZINFO
+	
+	DIRS="$(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d)"
+
+	for I in ${DIRS}
+	do
+		FULL+=($(find ${I} -mindepth 1))
+	done
+	LIST="${FULL[@]##/usr/share/zoneinfo/}"
+	ZINFO=$(print_zoneinfo_dg ${LIST})
+	
+	printf '%s' ${ZINFO}
+}

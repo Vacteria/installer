@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Users setup
+# timezone setup
+# hostname setup
+# hosts file creation
+# Net interface files creation
+# resolv.conf file creation
+# fstab file creation
+# vacteria-release file creation
+# inittab file dition (for runlevel)
+# initramfs image setup

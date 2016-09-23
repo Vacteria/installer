@@ -1,0 +1,202 @@
+#!/bin/bash
+
+gui_die()
+{
+	dialog "$(gettext "\Z0Fatal error")" --msgbox "$(msg "${@}")" 10 60
+
+	exit 1
+}
+
+gui_msg()
+{
+	dialog "$(gettext "\Z0Notice")" --infobox "$(msg "${@}" )" 10 60
+}
+
+gui_err()
+{
+	dialog "$(gettext "\Z0Error")" --msgbox "$(msg "${@}" )" 10 60
+}
+
+gui_yesno()
+{
+	dialog "$(gettext "\Z0Question ")" --yesno "$(msg "${@}" )" 10 60
+	
+	return $?
+}
+
+print_main_menu()
+{
+	local OPT=(
+		1 "$(gettext "Partitioning")"
+		2 "$(gettext "Partitions setup")"
+		3 "$(gettext "Instalation type")"
+		4 "$(gettext "User setup")"
+		5 "$(gettext "Time zone and clock")"
+		6 "$(gettext "Bootloader setup")"
+	)
+	
+	dialog "$(gettext "\Z0Main menu")" --cancel-label "${EXIT}" \
+	--extra-button --ok-label "${SELECT}" --extra-label "$(gettext "Install")" \
+	--stdout --visit-items --menu \
+	"$(gettext "\nIn this menu, you can configure your vct instalation. Remember \
+	that not all steps are sequential and some are entirely optional\n")" 18 60 6 \
+	"${OPT[@]}"
+}
+
+print_dsk_dg()
+{
+	local ID QRY ARR IFS MYSIZE MYLIST IFS
+
+	log_printing_dialog "Disk select"
+
+	for ID in $(sql "SELECT id_disk FROM Disks")
+	do	
+		QRY="$(sql "SELECT (device||','||size||','||model) FROM Disks WHERE id_disk='${ID}'")"
+		IFS=$','
+		for I in ${QRY}
+		do
+			ARR+=("${I}")
+		done
+		unset IFS
+
+		DEV="${ARR[0]}"
+		SIZE="${ARR[1]}"
+		MODEL="${ARR[2]}"
+		MYSIZE=$(use_size ${SIZE})
+		MYLIST+=(${DEV} "${MYSIZE} ${MODEL}")
+	done
+	unset IFS
+	
+	dialog "$(gettext "\Z0Disk selection")" --cancel-label "${BACK}" --stdout --menu \
+	"$(gettext "Select one disk to parted")" 10 70 0 \
+	"${MYLIST[@]}"
+}
+
+print_blk_dg()
+{
+	local ARR ID P QRY I
+	
+	unset IFS
+	
+	for ID in $(sql "SELECT id_disk FROM Disks")
+	do
+		for P in $(sql "SELECT id_part FROM Partitions WHERE id_disk='${ID}'")
+		do
+			QRY=($(sql "SELECT (device||' '||size) FROM Partitions WHERE id_part='${P}'"))
+			DEV="${QRY[0]}"
+			SIZE="$(use_size ${QRY[1]})"
+
+			MQRY=($(sql "SELECT (devfmt||' '||mount) FROM MountPoints WHERE device='${DEV}'" ))
+			DEVFMT="${MQRY[0]}"
+			case ${DEVFMT} in
+				0 ) DEVFMTD="${NO}"  ;;
+				1 ) DEVFMTD="${YES}" ;;
+			esac
+			MNTPT="${MQRY[1]:-${NONE}}"
+			
+			MYLIST+=(${DEV} "${SIZE} - ${DEVFMT} ${MNTPT}")
+		done
+	done
+
+	dialog "$(gettext "\Z0Partition selection")" \
+	--cancel-label "${CONTI}" --ok-label "${SELECT}" --stdout --menu \
+	"$(gettext "Select Partition")" 10 70 0 \
+	"${MYLIST[@]}"
+}
+
+print_mnt_dg()
+{
+	local PART="${1}"
+	
+	MNT=(
+		/     "$(gettext 'Root device')" on
+		swap  "$(gettext 'Swap system space')" off
+		/boot "$(gettext 'Kernel and boot files')" off
+		/usr  "$(gettext 'Common users data and binaries')" off
+		/home "$(gettext 'Users home directories')" off
+		/var  "$(gettext 'Variable data and datbase home')" off
+		/tmp  "$(gettext 'Temporal system and users files')" off
+		/srv  "$(gettext 'Servers home and web data')" off
+	)
+	
+	dialog "$(gettext "\Z0Mount Points")" --cancel-label \
+	"${BACK}" --ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext '\nSelect a mount point %s device\n') "${PART_TO_EDIT}"" 18 60 6 \
+	"${MNT[@]}"
+}
+
+print_ins_dg()
+{
+	local LIST=(
+		core    "Minimal base system" off
+		server  "System whit all web related services" off
+		desktop "Complete work station system" on
+	)
+	
+	dialog "$(gettext "\Z0System selection")" --cancel-label \
+	"${BACK}" --ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext "\nSelect your system type\n")" 18 60 6 \
+	"${LIST[@]}"	
+}
+
+print_passwd_dg()
+{
+	local MESSAGE="${@}"
+	
+	dialog "${PASSWD}" --insecure --stdout --cancel-label "${SKIP}" --passwordbox \
+	"${MESSAGE}" 10 60
+}
+
+print_user_dg()
+{
+	local MESSAGE="${@}"
+
+	dialog "$(gettext 'User name')" --cancel-label "${SKIP}" --stdout --inputbox \
+	"${MESSAGE}" 10 60
+}
+
+print_zoneinfo_dg()
+{
+	local INPUT LIST
+	
+	INPUT=(${@})
+	LIST=(${INPUT[@]/%/ "-" off })
+	
+	dialog "$(gettext "\Z0Zone info")" --cancel-label \
+	"${BACK}" --ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext "\nSelect your zone information. Normally this should be the country will you alive\n")" 25 60 15 \
+	"${LIST[@]}"
+}
+
+print_hwclock_dg()
+{
+	local LIST=(
+		utc "" on
+		localtime "" off
+	)
+	
+	dialog "$(gettext "\Z0Hardware clock")" --cancel-label \
+	"${BACK}" --ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext "\nSelect method for hardware clock configuration, If you are not sure what this is select \"utc\" \n")" \
+	15 60 8 "${LIST[@]}"
+}
+
+print_hostname_dg()
+{
+	dialog "$(gettext 'Host Name')" --cancel-label "${SKIP}" --stdout --inputbox \
+	"$(gettext 'Set the system hostname. This is necesary for machinne identification across the network.')" 10 60
+}
+
+print_loader_dg()
+{
+	local LIST=(
+		mbr  "$(gettext 'Master boot record')" on
+		dev  "$(gettext 'Disk or partition')" off
+		skip "$(gettext 'No install (only for experts)')" off
+	)
+	
+	dialog "$(gettext "\Z0Boot loader")" --cancel-label \
+	"${BACK}" --ok-label "${SELECT}" --stdout --radiolist \
+	"$(gettext "\nSelect boot loader place instalation. If you are not sure what this is select \"mbr\"\n")" 15 60 8 \
+	"${LIST[@]}"	
+}

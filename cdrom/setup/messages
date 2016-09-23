@@ -1,0 +1,127 @@
+#!/bin/bash
+
+set +o posix
+shopt -s expand_aliases
+
+if builtin command -v gettext >/dev/null
+then
+	alias gettext='gettext -e'
+else
+	alias gettext='printf %s'
+fi
+
+EXIT=$(gettext 'Exit')
+SELECT=$(gettext 'Select')
+CANCEL=$(gettext 'Cancel')
+APPLY=$(gettext 'Apply')
+BACK=$(gettext 'Back')
+EDIT=$(gettext 'Edit')
+READY=$(gettext 'Ready')
+CONTI="$(gettext 'Continue')"
+NOSET="$(gettext 'Not set')"
+NONE=$(gettext 'None')
+YES=$(gettext 'Yes')
+NO=$(gettext 'No')
+PASSWD="$(gettext 'Password')"
+SKIP="$(gettext 'Skip')"
+FORMATING="$(gettext 'Formating')"
+MOUNTING="$(gettext 'Mounting')"
+FAILFMT="$(gettext 'Failed to format')"
+FAILMNT="$(gettext 'Failed to mount')"
+
+msg()
+{
+	local MSG="${1}"
+	shift 
+
+	printf "${MSG}\n" ${@}
+
+	return 0
+}
+
+log()
+{
+	local MSG="${1}"
+	shift
+
+	printf "${MSG}\n" ${@} | logger -s -t LOG 2>>${MYLOG}
+
+	return 0
+}
+
+die()
+{
+	local MSG="${1}"
+	shift
+
+	printf "ERROR : ${MSG}\n" ${@}
+
+	exit 1
+}
+
+log_cmd()
+{
+	logger -s -t CMD 2>> ${MYLOG}
+}
+
+log_no_mount()
+{
+	log "$(gettext '%s is not mounted')" "${1}"
+}
+
+log_umounting()
+{
+	log "$(gettext 'Umounting %s')" "${1}"
+}
+
+log_mounting()
+{
+	log "$(gettext 'Mounting %s on %s')" "${1}" "${2}"
+}
+
+log_forb_umount()
+{
+	log "$(gettext 'Unable to umount %s. Are you crazy ??')" "${1}"
+}
+
+log_killing_hold()
+{
+	log "$(gettext 'Killing %s hold process')" "${1}"
+}
+
+log_mis_args()
+{
+	log "$(gettext '%s : Missing arguments')" "${1}"
+}
+
+log_inserting()
+{
+	log "$(gettext 'Inserting %s on %s table')" ${1} ${2}
+}
+
+log_not_disk()
+{
+	log "$(gettext '%s device does not looks like disk')" "${1}"
+}
+
+log_flushing_table()
+{
+	log "$(gettext 'Flushing %s table')" "${1}"
+}
+
+log_action_selected()
+{
+	log "===== $(gettext '%s action selected')" "${1}"
+}
+
+log_printing_dialog()
+{
+	log "$(gettext 'Printing %s dialog')" "${1}"
+}
+
+log_block_selected()
+{
+	log "$(gettext '%s block device selected')" "${1}"
+}
+
+

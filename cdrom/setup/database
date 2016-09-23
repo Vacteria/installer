@@ -1,0 +1,92 @@
+#!/bin/bash
+
+flush_database()
+{
+	local T S
+
+	S="0"
+
+	if [ ! -f "${MYDB}" ]
+	then
+		log "$(gettext 'Database not found, not clen')"
+		return 0
+	fi
+
+	log "$(gettext 'Cleanning all tables on database')"
+	for T in $(sql ".tables")
+	do
+		log_flushing_table "${T}"
+		if ! sql "DELETE FROM ${T}" | log_cmd
+		then
+			S="1"
+		fi
+	done
+
+	return ${S}
+}
+
+create_database()
+{
+	log "$(gettext 'Creating install database')"
+	sql <<SQL || return 1
+CREATE TABLE IF NOT EXISTS Disks (
+	id_disk     INTEGER NOT NULL PRIMARY KEY,
+	device      VARCHAR(64) UNIQUE,
+	size        VARCHAR(64),
+	model       VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS Partitions (
+	id_part     INTEGER NOT NULL PRIMARY KEY,
+	id_disk     INTEGER,
+	device      VARCHAR(64),
+	size        VARCHAR(64),
+	type        VARCHAR(64),
+	fstype      VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS RaidSlaves (
+	id_raid     INTEGER,
+    block       VARCHAR(64) UNIQUE,
+	device      VARCHAR(64) UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS CdRooms (
+	id_cdrom    INTEGER NOT NULL PRIMARY KEY,
+	device      VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS LvmMembers (
+	id_lvm      INTEGER NOT NULL PRIMARY KEY,
+	device      VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS MountPoints (
+	id_mount    INTEGER NOT NULL PRIMARY KEY,
+	device      VARCHAR(64) UNIQUE,
+	devfmt      INTEGER DEFAULT '0',
+	mount       VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS Users (
+	id_user     INTEGER NOT NULL PRIMARY KEY,
+	name        VARCHAR(64) UNIQUE,
+	passwd      VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS Settings (
+	id_config   INTEGER NOT NULL PRIMARY KEY,
+	language    VARCHAR(64) DEFAULT "en",
+	keyboard    VARCHAR(64) DEFAULT "none",
+	zoneinfo    VARCHAR(64),
+	hwclock     VARCHAR(64),
+	hostname    VARCHAR(64),
+	profile     VARCHAR(64),
+	images      VARCHAR(64),
+	bootloader  VARCHAR(64)
+);
+SQL
+
+	return 0
+}
+

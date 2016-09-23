@@ -1,0 +1,352 @@
+#!/bin/bash
+
+empty()
+{
+	case "X${1}" in
+		X|XNone ) return 1 ;;
+	esac
+
+	return 0
+}
+
+run_script()
+{
+	local SCRIPT
+	
+	SCRIPT="${1##*/}"
+	if [[ -z "${SCRIPT}" || ! -f "/media/rootfs/var/vpm/setup/${SCRIPT}" ]]
+	then
+		log 'Unable to configure %s package' "${SCRIPT}"
+		return 0
+	fi
+	
+	log "Setting up ${SCRIPT}"
+	. /media/rootfs/var/vpm/setup/${SCRIPT}
+	
+	if command -v set_perms &>/dev/null
+	then
+		log "set_perm() found , running"
+		chroot /media/rootfs /bin/sh -c "/var/vpm/setup/${SCRIPT} setperm"
+	fi
+
+	if command -v exec_config &>/dev/null
+	then
+		log "exec_config() found , running"
+		chroot /media/rootfs /bin/sh -c "/var/vpm/setup/${SCRIPT} config"
+	fi
+	
+	return 0
+}
+
+
+install_check_settings()
+{
+	local FAIL INFO
+	local US ST RO LANG KBD ZONE HWC HOST PROF BLD
+	local SYS_SWAP SEL_SWAP PHI_MEM  NEED_SWAP
+	NEED_SWAP="0"
+	
+	US=( $(sql "SELECT (name||' '||passwd) FROM Users WHERE name!='root'") )
+	ST=( $(sql "SELECT * FROM Settings WHERE id_config='1'" | tr '|' ' ') )
+	RO="$(sql "SELECT device FROM MountPoints WHERE mount='/'" )"
+	
+	SYS_SWAP="$(sql "SELECT device FROM Partitions WHERE fstype='swap'")"
+	SEL_SWAP="$(sql "SELECT device FROM MountPoints WHERE mount='swap'")"
+	PHI_MEM="$(( $(cat /proc/meminfo | grep "^MemTotal" | gawk '{print $2}') / ${MYBITE} ))"
+	
+	if (( ${PHI_MEM} <= 512 ))
+	then
+		if [[ -z "${SYS_SWAP}" && -z "${SEL_SWAP}" ]]
+		then
+			NEED_SWAP="1"
+		fi
+	fi
+	
+	LANG="${ST[1]}"
+	KBD="${ST[2]}"
+	
+	# By menu order
+	PROF="${ST[6]}"
+	USR="${US[0]}"
+	PAS="${US[1]}"
+	HOST="${ST[5]}"
+	ZONE="${ST[3]}"
+	HWC="${ST[4]}"
+	BLD="${ST[7]}"
+
+	if ! empty "${LANG}" || ! empty "${KBD}" 
+	then
+		gui_msg "$(gettext 'Somthing is wrong with language detection. English settings will be use by default')"
+		sql "INSERT INTO Settings (language,keyboard) VALUES('en','none')"
+	fi
+
+	if [ "${NEED_SWAP}" == "1" ]
+	then
+		gui_msg "$(gettext 'Your system have less than 512MB of RAM and have not any swap partition setup or exist for use. Your, really, really need select a swap partiion to continue')"
+	fi
+	
+	if ! empty "${RO}" 
+	then
+		FAIL+=("$(gettext 'System root partition : Menu entry 2')\n")
+	else
+		INFO+=("$(gettext 'System root partition : ') ${RO}\n")
+	fi
+
+	if [ "${NEED_SWAP}" == "1" ]
+	then
+		FAIL+=("$(gettext 'System swap partition : Menu entry 2')\n")
+	else
+		INFO+=("$(gettext 'System swap partition : ') ${SEL_SWAP}\n")		
+	fi
+	
+	if ! empty "${PROF}"
+	then
+		FAIL+=("$(gettext 'Installation profile  : Menu entry 3')\n")
+	else
+		INFO+=("$(gettext 'Istallation profile : ') ${PROF}\n")
+	fi
+	
+	if ! empty "${USR}"
+	then
+		FAIL+=("$(gettext 'user name setup       ; Menu entry 4')\n")
+	else
+		INFO+=("$(gettext 'Unprivileged user name : ') ${USR}\n")
+	fi
+	
+	if ! empty "${PAS}"
+	then
+		FAIL+=("$(gettext 'User name passwd      : Menu entry 4')\n")
+	else
+		INFO+=("$(gettext 'Unprivileged user passwd : ') *******\n")
+	fi
+	
+	if ! empty "${HOST}"
+	then
+		FAIL+=("$(gettext 'Default host name      : Menu entry 4')\n")
+	else
+		INFO+=("$(gettext 'Default hostname : ') ${HOST}\n")
+	fi
+	
+	if ! empty "${ZONE}"
+	then
+		FAIL+=("$(gettext 'Time zone setup        : Menu entry 5')\n")
+	else
+		INFO+=("$(gettext 'Default time zone : ') ${ZONE}\n")
+	fi
+	
+	if ! empty "${HWC}"
+	then
+		FAIL+=("$(gettext 'Hardware clock mode    : Menu entry 5')\n")
+	else
+		INFO+=("$(gettext 'Hardware clock : ') ${HWC}\n")
+	fi
+	
+	if ! empty "${BLD}"
+	then
+		FAIL+=("$(gettext 'Bootloader setup       : Menu entry 6')\n")
+	else
+		INFO+=("$(gettext 'Bootloader place : ') ${BLD}\n")
+	fi
+	
+	if (( ${#FAIL[@]} > 0 ))
+	then
+		dialog "$(gettext 'Errors detected')" --msgbox "${FAIL[*]}" 0 0
+		return 1
+	fi
+
+	dialog "$(gettext 'Settings to installer')" --yesno "The next settings will be used :\n\n${INFO[*]}\n\nDo you want to continue ?" 0 0
+	if [ "$?" == "1" ]
+	then
+		return 1
+	fi
+	
+	return 0
+}
+
+check_images()
+{
+	local IMAGES="$(sql "SELECT images FROM Settings WHERE id_config='1'")"
+	
+	for I in ${IMAGES}
+	do
+		if [ ! -f /images/${I}.sqf ]
+		then
+			gui_die 'Unable to find %s image on install media' "${I}"
+		else
+			mkdir -p /media/${I}
+			if ! mount -o loop,ro /images/${I}.sqf /media/${I}
+			then
+				rmdir /media/${I}
+				gui_die 'failed to mount %s image. Looks like damaged' "${I}"
+			else
+				umount /media/${I}
+				rmdir /media/${I}
+			fi
+		fi
+	done
+	
+	return 0
+}
+
+format_and_mount()
+{
+	local MYROOT I A D M
+
+	for I in "$(sql "SELECT device FROM MountPoints WHERE mount='swap' AND devfmt='1'")"
+	do
+		gui_msg "$(gettext '\n%s %s device')" "${FORMATING}" "${I}"
+		log "Formatting %s" "${I}"
+		swapoff -a   &>> ${MYLOG}
+		mkswap  ${I} &>> ${MYLOG}
+		swapon  -a   &>> ${MYLOG}
+	done
+	
+	MYROOT="$(sql "SELECT device FROM MountPoints WHERE mount='/' AND devfmt='1'")"
+	gui_msg "$(gettext '\n%s %s device')" "${FORMATING}" "${MYROOT}"
+	log "Formatting %s" "${MYROOT}"
+	if ! mke2fs -t ext4 ${MYROOT} &>> ${MYLOG}
+	then
+		gui_die "$(gettext '\n%s %s')" "${FAILFMT}" "${MYROOT}"
+		exit 1
+	fi
+	
+	gui_msg "$(gettext '\n%s %s device')" "${MOUNTING}" "${MYROOT}"
+	log "Mounting %s" "${MYROOT}"
+	mkdir -p /media/rootfs
+	if ! mount ${MYROOT} /media/rootfs &>> ${MYLOG}
+	then
+		gui_die "$(gettext '\n%s %s')" "${FAILMNT}" "${MYROOT}"
+		exit 1
+	fi
+	
+	log "Searching another mountpoints"
+	for I in $(sql "SELECT (device||','||devfmt||','||mount) FROM MountPoints WHERE mount!=''")
+	do
+		A=(${I//,/ })
+		D="${A[0]}"
+		F="${A[1]}"
+		M="${A[2]}"
+
+		log "Found %s device with %s mountpoint" "${D}" "${M}"
+		
+		case "${M}" in
+			/|swap )
+				log "Skipping %s mountpoint" "${M}"
+				continue
+			;;
+			/* )
+				if [ "${F}" == "1" ]
+				then
+					gui_msg "$(gettext '\n%s %s device')" "${FORMATING}" "${D}"
+					log "Formatting %s" "${D}"
+					if ! mke2fs -t ext4 ${D} &>> ${MYLOG}
+					then
+						gui_die "$(gettext '\n%s %s')" "${FAILFMT}" "${D}"
+						exit 1
+					fi
+				fi
+				
+				gui_msg "$(gettext '\n%s %s device')" "${MOUNTING}" "${D}"
+				log "Mounting %s" "${D}"
+				mkdir -p /media/rootfs${M}
+				if ! mount ${D} /media/rootfs${M} &>> ${MYLOG}
+				then
+					gui_die "$(gettext '\n%s %s')" "${FAILMNT}" "${D}"
+					exit 1
+				fi
+			;;
+		esac
+	done
+}
+
+install_profiles()
+{
+	local IMAGES IMGBASE PROFILE ARRAY BULK P
+	
+	IMAGES="$(sql "SELECT images FROM Settings WHERE id_config='1'")"
+
+	gui_msg "$(gettext 'Starting a new vpm database')"
+	log "Setting up new empty vpm databse"
+	vpm --dbase --root=/media/rootfs
+	
+	gui_msg "$(gettext 'Setting up images')"
+	log 'Setting up images and mount sqf files'
+	for P in ${IMAGES}
+	do
+		log 'Setting up %s image' "${P}"
+		IMGBASE="/media/${P}"
+		PROFILE="/setup/profiles/${P}.txt"
+		ARRAY=( $(cat ${PROFILE}) )
+		
+		if mountpoint -q ${IMGBASE}
+		then
+			log '%s is mounting , force unmount' "${IMGBASE}"
+			umount_killing ${IMGBASE}
+		fi
+		
+		log 'Mounting %s image on %s dir' "/images/${P}.sqf" "${IMGBASE}"
+		[ ! -d "${IMGBASE}" ] && mkdir -p "${IMGBASE}"
+		mount -o loop,ro /images/${P}.sqf ${IMGBASE}
+		
+		PKGLIST=(${ARRAY[@]/#/${IMGBASE}/})
+		PKGCONF=()
+		NUM="${#PKGLIST[@]}"
+		COUNT="0"
+		
+{
+	for I in ${PKGLIST[@]}
+	do
+		FILE="${I##*/}"
+		cat <<EOF
+XXX
+$(( ${COUNT} * 100 / ${NUM} ))
+$(gettext '\nInstalling') ${FILE}
+XXX
+EOF
+		vpm --install --root=/media/rootfs --notriggers --noscript --norundeps --noconflicts --noinitrc ${I}
+		
+		let COUNT="${COUNT}+1"
+		
+		if [ -r /media/rootfs/var/vpm/setup/${FILE%.vpm} ]
+		then
+			log 'Setup file found for %s package' ${FILE}
+			PKGCONF+=(${FILE%.vpm})
+		fi
+	done
+	
+} | dialog "$(gettext "Install progress")" --gauge "$(gettext 'Installing packages')" 10 70 0 || exit 1
+	done
+
+	sed -i -e '/^#'${LANG}'/ s/# *//' /media/rootfs/etc/rc.conf.d/locales
+	sed -i -e 's/^LANG=.*/LANG="'${LANG}'"/g' /media/rootfs/etc/rc.conf.d/i18n
+	cat /etc/rc.conf.d/keyboard > /media/rootfs/etc/rc.conf.d/keyboard
+	case $(sql "SELECT profile FROM Settings WHERE id_config='1'") in
+		core|server ) LEVEL="3" ;;
+		desktop     ) LEVEL="5" ;;
+	esac
+	sed -i -e 's/^id:.*:initdefault:/id:'${LEVEL}':initdefault:/g' /media/rootfs/etc/inittab
+	
+	NUM="${#PKGCONF[@]}"
+	if (( ${NUM} > 0 ))
+	then
+		log 'Pending configure operations, running'
+		COUNT="0"
+
+{
+	for I in ${PKGCONF[@]}
+	do
+		cat <<EOF
+XXX
+$(( ${COUNT} * 100 / ${NUM} ))
+$(gettext '\nSetting up') ${I}
+XXX
+EOF
+		log 'Running %s configuration' "${I}"
+		run_script ${I}
+	done
+} | dialog "$(gettext "Configure progress")" --gauge "$(gettext 'Setting up packages')" 10 70 0 || exit 1
+	
+	fi
+	
+	
+}

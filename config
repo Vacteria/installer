@@ -1,0 +1,21 @@
+
+#
+# Generic shared config options
+#
+ARCH="${ARCH:-$(get_arch)}"
+
+#
+# Path to repo for installer image creation
+#
+REPO="/root/cdrepo"
+
+#
+# CDrom creation options
+#
+KERNEL="${KERNEL:-$(get_kernel)}"
+ISONAME="vct${ARCH#x}"
+CODENAME="infected"
+RELEASE="1.0alpha1"
+VENDOR="Vacteria GNU/Linux"
+VOLUME="VCT_INSTALLER"
+
